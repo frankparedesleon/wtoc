@@ -1,0 +1,75 @@
+version: '3.9'
+
+services:
+  mock-hcm:
+    build:
+      context: ./apps/mock-hcm
+      dockerfile: Dockerfile
+    ports:
+      - '3001:3001'
+    environment:
+      - MOCK_HCM_PORT=3001
+      - NODE_ENV=production
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/hcm/test/reset', '--method=POST']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  time-off:
+    build:
+      context: ./apps/time-off
+      dockerfile: Dockerfile
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_PATH=/app/data/time-off.db
+      - HCM_BASE_URL=http://mock-hcm:3001
+      - HCM_TIMEOUT_MS=5000
+      - HCM_RETRY_ATTEMPTS=3
+      - CB_FAILURE_THRESHOLD=5
+      - CB_HALF_OPEN_DELAY_MS=30000
+      - BALANCE_STALE_THRESHOLD_MINUTES=15
+      - IDEMPOTENCY_TTL_HOURS=24
+      - BATCH_SYNC_CRON=0 */6 * * *
+      - LOG_DIR=/app/logs
+    volumes:
+      - time-off-data:/app/data
+      - time-off-logs:/app/logs
+    depends_on:
+      mock-hcm:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/time-off/balances/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Test profile: runs with in-memory DB, connects to mock-hcm
+  time-off-test:
+    build:
+      context: ./apps/time-off
+      dockerfile: Dockerfile
+    profiles: ['test']
+    environment:
+      - NODE_ENV=test
+      - PORT=3000
+      - DB_PATH=:memory:
+      - HCM_BASE_URL=http://mock-hcm:3001
+      - HCM_TIMEOUT_MS=5000
+      - HCM_RETRY_ATTEMPTS=3
+      - CB_FAILURE_THRESHOLD=5
+      - CB_HALF_OPEN_DELAY_MS=30000
+      - BALANCE_STALE_THRESHOLD_MINUTES=15
+      - IDEMPOTENCY_TTL_HOURS=24
+      - MOCK_HCM_URL=http://mock-hcm:3001
+    depends_on:
+      mock-hcm:
+        condition: service_healthy
+    command: ['npm', 'run', 'test:e2e']
+
+volumes:
+  time-off-data:
+  time-off-logs:

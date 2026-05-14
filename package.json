@@ -1,0 +1,18 @@
+{
+  "name": "time-off-service",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build:time-off": "cd apps/time-off && npm run build",
+    "build:mock-hcm": "cd apps/mock-hcm && npm run build",
+    "start:time-off": "cd apps/time-off && npm run start:prod",
+    "start:mock-hcm": "cd apps/mock-hcm && npm run start:prod",
+    "test": "cd apps/time-off && npm run test",
+    "test:integration": "cd apps/time-off && npm run test:integration",
+    "test:e2e": "cd apps/time-off && npm run test:e2e",
+    "test:cov": "cd apps/time-off && npm run test:cov"
+  }
+}
