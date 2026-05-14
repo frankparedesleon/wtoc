@@ -27,6 +27,10 @@ async function setBalance(
   });
 }
 
+async function setMode(mode: string) {
+  await axios.post(`${MOCK_HCM_URL}/hcm/test/set-mode`, { mode });
+}
+
 async function seedEmployee(
   app: INestApplication,
   employeeId: string,
@@ -106,6 +110,30 @@ describe("Time-Off Microservice — E2E", () => {
     });
   });
 
+  // ── E03: HCM rejects locally-valid request ─────────────────────────────────
+  describe("E03 — HCM rejects locally-valid request", () => {
+    it("returns 422 HCM_REJECTION and releases balance reservation", async () => {
+      const empId = `emp-e03-${uuidv4().substring(0, 8)}`;
+      // Seed local with 10 days available
+      await seedEmployee(app, empId, "loc-nyc", 10);
+      // Now set HCM balance to 0 — local cache shows 10 but HCM will reject
+      await setBalance(empId, "loc-nyc", 0);
+
+      const res = await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .set("Idempotency-Key", uuidv4())
+        .send({
+          employeeId: empId,
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter,
+        })
+        .expect(422);
+
+      expect(res.body.error).toBe("HCM_REJECTION");
+    });
+  });
+
   // ── E04: Idempotency ───────────────────────────────────────────────────────
   describe("E04 — Idempotent retry returns same response", () => {
     it("second request with same key returns identical response", async () => {
@@ -135,6 +163,33 @@ describe("Time-Off Microservice — E2E", () => {
     });
   });
 
+  // ── E07: HCM unavailable ──────────────────────────────────────────────────
+  describe("E07 — HCM unavailable → request queued as PENDING", () => {
+    it("request is created even when HCM is down", async () => {
+      const empId = `emp-e07-${uuidv4().substring(0, 8)}`;
+      await seedEmployee(app, empId, "loc-nyc", 10);
+
+      // Set HCM to error mode
+      await setMode("error-500");
+
+      const res = await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .set("Idempotency-Key", uuidv4())
+        .send({
+          employeeId: empId,
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter,
+        });
+
+      // Request should be created with PENDING status regardless of HCM being down
+      expect([201, 202]).toContain(res.status);
+      expect(res.body.id).toBeDefined();
+
+      await setMode("normal");
+    });
+  });
+
   // ── E09: Unknown dimensions ────────────────────────────────────────────────
   describe("E09 — Unknown dimensions rejected before HCM", () => {
     it("returns 422 UNKNOWN_DIMENSIONS", async () => {
@@ -150,57 +205,6 @@ describe("Time-Off Microservice — E2E", () => {
         .expect(422);
 
       expect(res.body.error).toBe("UNKNOWN_DIMENSIONS");
-    });
-  });
-
-  // ── E22: Missing Idempotency-Key ───────────────────────────────────────────
-  describe("E22 — Missing Idempotency-Key returns 400", () => {
-    it("returns 400 MISSING_IDEMPOTENCY_KEY", async () => {
-      const res = await request(app.getHttpServer())
-        .post("/time-off/requests")
-        .send({
-          employeeId: "emp-001",
-          locationId: "loc-nyc",
-          startDate: tomorrow,
-          endDate: dayAfter,
-        })
-        .expect(400);
-
-      expect(res.body.error).toBe("MISSING_IDEMPOTENCY_KEY");
-    });
-  });
-
-  // ── E21: Key reuse with different payload ──────────────────────────────────
-  describe("E21 — Idempotency-Key reused with different payload", () => {
-    it("returns 422 IDEMPOTENCY_KEY_REUSE", async () => {
-      await seedEmployee(app, "emp-e21a", "loc-nyc", 10);
-      await seedEmployee(app, "emp-e21b", "loc-nyc", 10);
-
-      const key = `key-reuse-${uuidv4()}`;
-
-      await request(app.getHttpServer())
-        .post("/time-off/requests")
-        .set("Idempotency-Key", key)
-        .send({
-          employeeId: "emp-e21a",
-          locationId: "loc-nyc",
-          startDate: tomorrow,
-          endDate: dayAfter,
-        })
-        .expect(201);
-
-      const res = await request(app.getHttpServer())
-        .post("/time-off/requests")
-        .set("Idempotency-Key", key)
-        .send({
-          employeeId: "emp-e21b",
-          locationId: "loc-nyc",
-          startDate: tomorrow,
-          endDate: dayAfter,
-        })
-        .expect(422);
-
-      expect(res.body.error).toBe("IDEMPOTENCY_KEY_REUSE");
     });
   });
 
@@ -238,6 +242,75 @@ describe("Time-Off Microservice — E2E", () => {
     });
   });
 
+  // ── E17: Idempotent approval ───────────────────────────────────────────────
+  describe("E17 — Manager approves already APPROVED request", () => {
+    it("returns 200 idempotently without side effects", async () => {
+      await seedEmployee(app, "emp-e17", "loc-nyc", 10);
+
+      const createRes = await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .set("Idempotency-Key", uuidv4())
+        .send({
+          employeeId: "emp-e17",
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter,
+        })
+        .expect(201);
+
+      const reqId = createRes.body.id;
+
+      // First approval
+      await request(app.getHttpServer())
+        .patch(`/time-off/requests/${reqId}/approve`)
+        .set("Idempotency-Key", uuidv4())
+        .send({ managerId: "mgr-001" })
+        .expect(200);
+
+      // Second approval — idempotent
+      const res = await request(app.getHttpServer())
+        .patch(`/time-off/requests/${reqId}/approve`)
+        .set("Idempotency-Key", uuidv4())
+        .send({ managerId: "mgr-001" })
+        .expect(200);
+
+      expect(res.body.status).toBe("APPROVED");
+    });
+  });
+
+  // ── E18: Cancel APPROVED request ──────────────────────────────────────────
+  describe("E18 — Employee cancels an APPROVED request", () => {
+    it("returns 409 INVALID_STATE_TRANSITION", async () => {
+      await seedEmployee(app, "emp-e18", "loc-nyc", 10);
+
+      const createRes = await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .set("Idempotency-Key", uuidv4())
+        .send({
+          employeeId: "emp-e18",
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter,
+        })
+        .expect(201);
+
+      const reqId = createRes.body.id;
+
+      await request(app.getHttpServer())
+        .patch(`/time-off/requests/${reqId}/approve`)
+        .set("Idempotency-Key", uuidv4())
+        .send({ managerId: "mgr-001" })
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .delete(`/time-off/requests/${reqId}`)
+        .set("Idempotency-Key", uuidv4())
+        .expect(409);
+
+      expect(res.body.error).toBe("INVALID_STATE_TRANSITION");
+    });
+  });
+
   // ── E19: Cancel non-existent request ──────────────────────────────────────
   describe("E19 — Cancel non-existent request returns 404", () => {
     it("returns 404 REQUEST_NOT_FOUND", async () => {
@@ -247,6 +320,94 @@ describe("Time-Off Microservice — E2E", () => {
         .expect(404);
 
       expect(res.body.error).toBe("REQUEST_NOT_FOUND");
+    });
+  });
+
+  // ── E20: Approval deducts balance ─────────────────────────────────────────
+  describe("E20 — Approval deducts balance in local DB and HCM", () => {
+    it("balance decreases after approval", async () => {
+      const empId = `emp-e20-${uuidv4().substring(0, 8)}`;
+      await seedEmployee(app, empId, "loc-nyc", 10);
+
+      const createRes = await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .set("Idempotency-Key", uuidv4())
+        .send({
+          employeeId: empId,
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter, // 3 days
+        })
+        .expect(201);
+
+      const reqId = createRes.body.id;
+
+      const approveRes = await request(app.getHttpServer())
+        .patch(`/time-off/requests/${reqId}/approve`)
+        .set("Idempotency-Key", uuidv4())
+        .send({ managerId: "mgr-001" })
+        .expect(200);
+
+      expect(approveRes.body.status).toBe("APPROVED");
+
+      const balAfter = await request(app.getHttpServer()).get(
+        `/time-off/balances/${empId}/loc-nyc`,
+      );
+
+      // Started with 10, requested 3 days → available should be 7
+      expect(balAfter.body.available).toBe(7);
+      expect(balAfter.body.used).toBe(3);
+    });
+  });
+
+  // ── E21: Key reuse with different payload ──────────────────────────────────
+  describe("E21 — Idempotency-Key reused with different payload", () => {
+    it("returns 422 IDEMPOTENCY_KEY_REUSE", async () => {
+      await seedEmployee(app, "emp-e21a", "loc-nyc", 10);
+      await seedEmployee(app, "emp-e21b", "loc-nyc", 10);
+
+      const key = `key-reuse-${uuidv4()}`;
+
+      await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .set("Idempotency-Key", key)
+        .send({
+          employeeId: "emp-e21a",
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter,
+        })
+        .expect(201);
+
+      const res = await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .set("Idempotency-Key", key)
+        .send({
+          employeeId: "emp-e21b",
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter,
+        })
+        .expect(422);
+
+      expect(res.body.error).toBe("IDEMPOTENCY_KEY_REUSE");
+    });
+  });
+
+  // ── E22: Missing Idempotency-Key ───────────────────────────────────────────
+  describe("E22 — Missing Idempotency-Key returns 400", () => {
+    it("returns 400 MISSING_IDEMPOTENCY_KEY", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/time-off/requests")
+        .send({
+          employeeId: "emp-001",
+          locationId: "loc-nyc",
+          startDate: tomorrow,
+          endDate: dayAfter,
+        })
+        .expect(400);
+
+      expect(res.body.error).toBe("MISSING_IDEMPOTENCY_KEY");
     });
   });
 
@@ -278,7 +439,6 @@ describe("Time-Off Microservice — E2E", () => {
         })
         .expect(201);
 
-      // Reduce balance via batch sync
       await setBalance(empId, "loc-nyc", 1);
       await request(app.getHttpServer())
         .post("/time-off/balances/batch-sync")

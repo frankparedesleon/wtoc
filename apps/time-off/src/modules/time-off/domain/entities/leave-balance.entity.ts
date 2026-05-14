@@ -1,11 +1,11 @@
-import { DateTime } from 'luxon';
-import { EmployeeId } from '../value-objects/employee-id.vo';
-import { LocationId } from '../value-objects/location-id.vo';
-import { BalanceAmount } from '../value-objects/balance-amount.vo';
-import { LeaveBalanceSynced } from '../events';
+import { DateTime } from "luxon";
+import { EmployeeId } from "../value-objects/employee-id.vo";
+import { LocationId } from "../value-objects/location-id.vo";
+import { BalanceAmount } from "../value-objects/balance-amount.vo";
+import { LeaveBalanceSynced } from "../events";
 
 const STALE_THRESHOLD_MINUTES = parseInt(
-  process.env.BALANCE_STALE_THRESHOLD_MINUTES || '15',
+  process.env.BALANCE_STALE_THRESHOLD_MINUTES || "15",
   10,
 );
 
@@ -82,7 +82,7 @@ export class LeaveBalance {
 
   isStale(): boolean {
     const minutesSinceSync = Math.abs(
-      this._lastSyncedAt.diffNow('minutes').minutes,
+      this._lastSyncedAt.diffNow("minutes").minutes,
     );
     return minutesSinceSync > STALE_THRESHOLD_MINUTES;
   }
@@ -93,6 +93,10 @@ export class LeaveBalance {
 
   softLock(days: number): void {
     this._available = this._available.subtract(days);
+  }
+
+  confirmDeduction(days: number): void {
+    this._used = this._used.add(days);
   }
 
   releaseLock(days: number): void {
