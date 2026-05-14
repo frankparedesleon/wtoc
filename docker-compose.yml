@@ -9,7 +9,7 @@ services:
       - MOCK_HCM_PORT=3001
       - NODE_ENV=production
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/hcm/test/reset', '--method=POST']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/hcm/balances/batch']
       interval: 5s
       timeout: 5s
       retries: 5
