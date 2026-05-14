@@ -1,13 +1,15 @@
 # Time-Off Microservice
 
+**GitHub Repository:** https://github.com/frankparedesleon/wtoc
+
 Backend microservice for managing employee time-off requests and syncing leave balances with an external HCM system (Workday/SAP). Built with NestJS, TypeScript, SQLite, and DDD/CQRS patterns.
 
 ## Architecture
 
 ```
 apps/
-├── time-off/          # Main microservice (NestJS + TypeORM + CQRS)
-└── mock-hcm/          # Mock HCM server for testing (NestJS)
+├── time-off/     # Main microservice (NestJS + TypeORM + CQRS)
+└── mock-hcm/     # Mock HCM server for testing (NestJS)
 ```
 
 ### Design Patterns
@@ -18,70 +20,87 @@ apps/
 - **Circuit Breaker**: protects against HCM unavailability (5 failures → OPEN → HALF-OPEN after 30s)
 - **Optimistic Locking**: `version` field on `LeaveBalance` prevents double-booking
 
-## Getting Started
+---
+
+## Quick Start (Docker — Recommended)
+
+### Prerequisites
+- Docker & Docker Compose
+
+```bash
+# Start both services (mock HCM + microservice)
+docker compose up
+
+# Swagger docs available at:
+http://localhost:3000/api/docs
+
+# Stop services
+docker compose down
+```
+
+---
+
+## Local Development
 
 ### Prerequisites
 - Node.js >= 20
-- Docker & Docker Compose
-
-### Local Development
 
 ```bash
-# Install dependencies
+# 1. Install dependencies
 cd apps/time-off && npm install
-cd apps/mock-hcm && npm install
+cd ../mock-hcm && npm install --prefix . --no-workspaces && cd ../..
 
-# Copy env
-cp .env.example .env
-
-# Start mock HCM
+# 2. Start mock HCM — Terminal 1
 cd apps/mock-hcm && npm run start:dev
 
-# Start microservice
+# 3. Start microservice — Terminal 2
 cd apps/time-off && npm run start:dev
 
-# Swagger docs
-open http://localhost:3000/api/docs
+# Swagger docs: http://localhost:3000/api/docs
 ```
 
-### Docker
-
-```bash
-# Start both services
-docker compose up
-
-# Run E2E test suite
-docker compose --profile test up --abort-on-container-exit
-```
+---
 
 ## Running Tests
 
 ```bash
 cd apps/time-off
 
-# Unit tests
+# Unit tests (no external dependencies)
 npm run test
 
 # Integration tests (SQLite in-memory, no Docker needed)
 npm run test:integration
 
 # E2E tests (requires mock HCM running on port 3001)
+# Start mock HCM first: cd apps/mock-hcm && npm run start:dev
 npm run test:e2e
 
 # All tests with coverage report
 npm run test:cov
 ```
 
-### Coverage Threshold
-Minimum **80% line coverage** enforced. CI fails if threshold is not met.
+### Test Results
+| Level | Tests | Status |
+|---|---|---|
+| Unit | 54 | ✅ |
+| Integration | 14 | ✅ |
+| E2E | 10 | ✅ |
+| **Total** | **78** | **✅** |
+
+**Coverage: 94.48% lines** (threshold: 80%)
+
+---
 
 ## API Endpoints
+
+All `POST`, `PATCH`, `DELETE` endpoints require the `Idempotency-Key` header.
 
 ### Time-Off Requests
 | Method | Path | Description |
 |---|---|---|
 | POST | `/time-off/requests` | Submit a new request |
-| GET | `/time-off/requests` | List requests (filterable) |
+| GET | `/time-off/requests` | List requests (filterable by employeeId, locationId, status, date) |
 | GET | `/time-off/requests/:id` | Get request by ID |
 | PATCH | `/time-off/requests/:id/approve` | Manager approves |
 | PATCH | `/time-off/requests/:id/reject` | Manager rejects |
@@ -91,29 +110,44 @@ Minimum **80% line coverage** enforced. CI fails if threshold is not met.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/time-off/balances/:employeeId/:locationId` | Get current balance |
-| POST | `/time-off/balances/sync` | Real-time sync with HCM |
-| POST | `/time-off/balances/batch-sync` | Full batch sync (webhook) |
+| POST | `/time-off/balances/sync` | Real-time sync with HCM for a specific employee/location |
+| POST | `/time-off/balances/batch-sync` | Receive full balance corpus from HCM (webhook) |
 
-All `POST`, `PATCH`, `DELETE` endpoints require the `Idempotency-Key` header.
+---
 
-## Mock HCM Endpoints
+## Mock HCM Server
 
-### Control Endpoints (for testing)
+Runs on port 3001. Simulates a real HCM system (Workday/SAP) for testing.
+
+### HCM API Endpoints
 | Method | Path | Description |
 |---|---|---|
-| POST | `/hcm/test/set-balance` | Set a specific balance |
+| GET | `/hcm/balances/:employeeId/:locationId` | Get balance |
+| POST | `/hcm/balances/:employeeId/:locationId` | Update balance |
+| GET | `/hcm/balances/batch` | Get all balances |
+
+### Test Control Endpoints
+| Method | Path | Description |
+|---|---|---|
+| POST | `/hcm/test/set-balance` | Seed a specific balance |
 | POST | `/hcm/test/set-mode` | Set failure mode |
-| POST | `/hcm/test/trigger-anniversary` | Simulate work anniversary |
-| GET  | `/hcm/test/last-request` | Get last request received |
-| POST | `/hcm/test/reset` | Reset to defaults |
+| POST | `/hcm/test/trigger-anniversary` | Simulate work anniversary bonus |
+| GET | `/hcm/test/last-request` | Get last request body received |
+| POST | `/hcm/test/reset` | Reset all balances and modes to defaults |
 
 ### Failure Modes
-- `normal` — all requests succeed
-- `timeout` — 10s delay to trigger client timeout
-- `error-500` — returns HTTP 500
-- `invalid-shape` — missing required fields in response
-- `negative-balance` — returns `available: -5`
+| Mode | Behavior |
+|---|---|
+| `normal` | All requests succeed (default) |
+| `timeout` | 10s delay — triggers client timeout |
+| `error-500` | Returns HTTP 500 — simulates HCM outage |
+| `invalid-shape` | Missing required fields — tests defensive parsing |
+| `negative-balance` | Returns `available: -5` — tests sanitization |
+
+---
 
 ## Key Design Decisions
 
-See [TRD_TimeOff_Microservice.docx](./docs/TRD_TimeOff_Microservice.docx) for full technical design including alternatives considered.
+See `docs/TRD_TimeOff_Microservice.docx` for the full Technical Requirements Document including challenges, proposed solution, and alternatives considered.
+
+See `docs/TestSuite_TimeOff_Microservice.docx` for the complete test suite specification with 57 documented scenarios.
